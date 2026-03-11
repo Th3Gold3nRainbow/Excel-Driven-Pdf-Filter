@@ -1,82 +1,112 @@
 import pandas as pd
 from PyPDF2 import PdfReader, PdfWriter
 import os
-import tkinter as tk
+import threading
+import customtkinter as ctk # Modern UI Library
 from tkinter import filedialog, messagebox
 
-def select_file(title, file_types):
-    """Opens a file dialog to select a file."""
-    root = tk.Tk()
-    root.withdraw()  # Hide the main tkinter window
-    file_path = filedialog.askopenfilename(title=title, filetypes=file_types)
-    root.destroy()
-    return file_path
+# Set the theme
+ctk.set_appearance_mode("dark")
+ctk.set_default_color_theme("blue")
 
-def select_save_path(title, default_name):
-    """Opens a dialog to choose where to save the result."""
-    root = tk.Tk()
-    root.withdraw()
-    file_path = filedialog.asksaveasfilename(title=title, defaultextension=".pdf", initialfile=default_name)
-    root.destroy()
-    return file_path
-
-def run_extraction():
-    # 1. Select the Source PDF
-    source_pdf = select_file("Select the Source PDF", [("PDF files", "*.pdf")])
-    if not source_pdf: return
-
-    # 2. Select the Excel List
-    excel_file = select_file("Select the Excel List", [("Excel files", "*.xlsx *.xls")])
-    if not excel_file: return
-
-    # 3. Select Save Location
-    output_pdf = select_save_path("Save the Result As", "filtered_document.pdf")
-    if not output_pdf: return
-
-    print(f"--- STARTING EXTRACTION ---")
-    
-    # --- STEP 1: LOAD EXCEL ---
-    try:
-        df = pd.read_excel(excel_file)
-        col_name = next((c for c in df.columns if str(c).strip().lower() == 'name'), None)
+class Modern_PDF_Filter(ctk.CTk):
+    def __init__(self):
+        super().__init__()
         
-        if col_name is None:
-            messagebox.showerror("Error", f"Column 'Name' not found.\nColumns found: {df.columns.tolist()}")
+        self.title("EXPDF-Filter Pro")
+        self.geometry("500x450")
+        
+        self.pdf_path = ""
+        self.excel_path = ""
+        self.df = None
+
+        # --- UI ELEMENTS ---
+        self.label_title = ctk.CTkLabel(self, text="EXPDF-Filter", font=("Roboto", 24, "bold"))
+        self.label_title.pack(pady=20)
+
+        # File Selection Frame
+        self.frame = ctk.CTkFrame(self)
+        self.frame.pack(pady=10, padx=20, fill="both", expand=True)
+
+        self.btn_browse = ctk.CTkButton(self.frame, text="📁 SELECT PDF & EXCEL", 
+                                        command=self.load_files, font=("Roboto", 14, "bold"))
+        self.btn_browse.pack(pady=20)
+
+        self.label_info = ctk.CTkLabel(self.frame, text="Status: Waiting for files...", text_color="gray")
+        self.label_info.pack()
+
+        # Column Selection
+        ctk.CTkLabel(self.frame, text="Search Column:").pack(pady=(10, 0))
+        self.column_selector = ctk.CTkComboBox(self.frame, values=["First select Excel"], width=250)
+        self.column_selector.pack(pady=5)
+
+        # Progress
+        self.progress_label = ctk.CTkLabel(self, text="0%")
+        self.progress_bar = ctk.CTkProgressBar(self, width=400)
+        self.progress_bar.set(0)
+        self.progress_bar.pack(pady=10)
+
+        # Action Button
+        self.btn_run = ctk.CTkButton(self, text="🚀 RUN EXTRACTION", 
+                                     command=self.start_thread, fg_color="#2ecc71", hover_color="#27ae60",
+                                     text_color="white", font=("Roboto", 16, "bold"))
+        self.btn_run.pack(pady=20)
+
+    def load_files(self):
+        self.pdf_path = filedialog.askopenfilename(title="Select PDF", filetypes=[("PDF", "*.pdf")])
+        self.excel_path = filedialog.askopenfilename(title="Select Excel", filetypes=[("Excel", "*.xlsx *.xls")])
+        
+        if self.pdf_path and self.excel_path:
+            try:
+                self.df = pd.read_excel(self.excel_path)
+                self.column_selector.configure(values=list(self.df.columns))
+                self.column_selector.set(self.df.columns[0])
+                self.label_info.configure(text="Files ready ✅", text_color="#2ecc71")
+            except Exception as e:
+                messagebox.showerror("Error", f"Excel Error: {e}")
+
+    def start_thread(self):
+        threading.Thread(target=self.run_process, daemon=True).start()
+
+    def run_process(self):
+        col = self.column_selector.get()
+        if not self.pdf_path or not self.df is not None:
+            messagebox.showwarning("Missing Files", "Please select files first!")
             return
 
-        name_list = df[col_name].dropna().astype(str).str.strip().unique().tolist()
-        print(f"List loaded: {len(name_list)} names found.")
-    except Exception as e:
-        messagebox.showerror("Excel Error", f"Could not read Excel: {e}")
-        return
+        try:
+            self.btn_run.configure(state="disabled")
+            search_vals = self.df[col].dropna().astype(str).tolist()
+            reader = PdfReader(self.pdf_path)
+            writer = PdfWriter()
+            total = len(reader.pages)
+            found = 0
 
-    # --- STEP 2: PROCESS PDF ---
-    try:
-        reader = PdfReader(source_pdf)
-        writer = PdfWriter()
-        pages_found = 0
+            for i, page in enumerate(reader.pages):
+                progress = (i + 1) / total
+                self.progress_bar.set(progress)
+                self.progress_label.configure(text=f"{int(progress*100)}% - Page {i+1}/{total}")
+                
+                text = page.extract_text().lower()
+                if any(v.lower() in text for v in search_vals):
+                    writer.add_page(page)
+                    found += 1
 
-        for i, page in enumerate(reader.pages):
-            text = page.extract_text()
-            if text:
-                text_upper = text.upper()
-                for name in name_list:
-                    if name.upper() in text_upper:
-                        writer.add_page(page)
-                        pages_found += 1
-                        print(f" > Match found on Page {i+1}: {name}")
-                        break 
-
-        # --- STEP 3: SAVE ---
-        if pages_found > 0:
-            with open(output_pdf, "wb") as out_f:
-                writer.write(out_f)
-            messagebox.showinfo("Success", f"Done! {pages_found} pages extracted to:\n{output_pdf}")
-        else:
-            messagebox.showwarning("No Matches", "No names from the list were found in the PDF.")
-
-    except Exception as e:
-        messagebox.showerror("PDF Error", f"An error occurred: {e}")
+            if found > 0:
+                output = os.path.join(os.path.dirname(self.pdf_path), f"Extracted_{col}.pdf")
+                with open(output, "wb") as f:
+                    writer.write(f)
+                messagebox.showinfo("Success", f"Done! {found} pages extracted.")
+            else:
+                messagebox.showwarning("No Match", "No matches found.")
+        
+        except Exception as e:
+            messagebox.showerror("Error", str(e))
+        finally:
+            self.btn_run.configure(state="normal")
+            self.progress_bar.set(0)
+            self.progress_label.configure(text="Ready")
 
 if __name__ == "__main__":
-    run_extraction()
+    app = Modern_PDF_Filter()
+    app.mainloop()
